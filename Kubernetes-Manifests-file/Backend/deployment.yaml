@@ -21,11 +21,9 @@ spec:
       labels:
         role: api
     spec:
-      imagePullSecrets:
-      - name: ecr-registry-secret
       containers:
       - name: api
-        image: 407622020962.dkr.ecr.us-east-1.amazonaws.com/backend:1
+        image: 529589763090.dkr.ecr.us-east-1.amazonaws.com/mybe-app:1
         imagePullPolicy: Always
         env:
           - name: MONGO_CONN_STR
