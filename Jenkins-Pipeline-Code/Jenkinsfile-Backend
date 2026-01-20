@@ -2,32 +2,23 @@ pipeline {
     agent any
 
     tools {
-        jdk 'jdk'            // Your configured JDK
-        nodejs 'nodejs'      // Your configured NodeJS
+        jdk 'jdk'
+        nodejs 'nodejs'
     }
 
     environment {
-        AWS_ACCOUNT_ID = "${ACCOUNT_ID}"                   // Passed as parameter
-        AWS_ECR_REPO_NAME = 'mybe-app'
         AWS_DEFAULT_REGION = 'us-east-1'
-        REPOSITORY_URI = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/"
-        SONAR_HOST_URL = 'http://52.90.253.120:9000'      // SonarQube public IP
+        AWS_ECR_REPO_NAME = 'mybe-app'
+        SONAR_HOST_URL = 'http://52.90.253.120:9000'
     }
 
     parameters {
         string(name: 'ACCOUNT_ID', defaultValue: '', description: 'AWS Account ID')
-        string(name: 'SONAR_TOKEN', defaultValue: '', description: 'SonarQube Auth Token')
     }
 
     stages {
         stage('Clean Workspace') {
             steps { cleanWs() }
-        }
-
-        stage('Checkout Code') {
-            steps {
-                git url: 'https://github.com/vamsikadiyam444/kubernetes-3-tier.git'
-            }
         }
 
         stage('SonarQube Analysis (Docker)') {
@@ -73,11 +64,11 @@ pipeline {
                         sh "docker build -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} ."
                         sh """
                             aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | \
-                            docker login --username AWS --password-stdin ${REPOSITORY_URI}
+                            docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/
                         """
-                        sh "docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} ${REPOSITORY_URI}${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}"
-                        sh "docker push ${REPOSITORY_URI}${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}"
-                        sh "trivy image ${REPOSITORY_URI}${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt"
+                        sh "docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}"
+                        sh "docker push ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}"
+                        sh "trivy image ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt"
                     }
                 }
             }
@@ -87,7 +78,7 @@ pipeline {
             steps {
                 dir('Kubernetes-Manifests-file/Backend') {
                     sh """
-                        kubectl set image deployment/api api=${REPOSITORY_URI}${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} -n three-tier
+                        kubectl set image deployment/api api=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} -n three-tier
                         kubectl rollout status deployment/api -n three-tier
                     """
                 }
@@ -96,11 +87,7 @@ pipeline {
     }
 
     post {
-        failure {
-            echo "❌ Backend pipeline failed"
-        }
-        success {
-            echo "✅ Backend pipeline succeeded"
-        }
+        failure { echo "❌ Backend pipeline failed" }
+        success { echo "✅ Backend pipeline succeeded" }
     }
 }
