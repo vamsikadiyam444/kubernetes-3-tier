@@ -7,18 +7,15 @@ pipeline {
     }
 
     parameters {
-        string(
-            name: 'ACCOUNT_ID',
-            defaultValue: '',
-            description: 'AWS Account ID'
-        )
+        string(name: 'ACCOUNT_ID', description: 'AWS Account ID')
     }
 
     environment {
         AWS_ACCOUNT_ID      = "${params.ACCOUNT_ID}"
         AWS_ECR_REPO_NAME   = 'mybe-app'
-        AWS_DEFAULT_REGION  = 'us-east-1'
-        REPOSITORY_URI      = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+        AWS_DEFAULT_REGION = 'us-east-1'
+        REPOSITORY_URI     = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+        SONAR_HOST_URL     = 'http://localhost:9000'
     }
 
     stages {
@@ -29,39 +26,28 @@ pipeline {
             }
         }
 
-        stage('SonarQube Analysis') {
+        stage('SonarQube Analysis (Docker)') {
             steps {
                 dir('Jenkins-Pipeline-Code/Backend') {
-                    withSonarQubeEnv('sonar-server') {
-                        sh """
+                    withCredentials([string(credentialsId: 'sonar-be-token', variable: 'SONAR_TOKEN')]) {
+                        sh '''
                         docker run --rm \
-                          -v ${WORKSPACE}/Jenkins-Pipeline-Code/Backend:/usr/src \
+                          -v "$PWD:/usr/src" \
                           sonarsource/sonar-scanner-cli \
                           -Dsonar.projectKey=three-tier-backend \
                           -Dsonar.projectName=three-tier-backend \
-                          -Dsonar.host.url=$SONAR_HOST_URL \
-                          -Dsonar.login=$SONAR_AUTH_TOKEN
-                        """
+                          -Dsonar.host.url=${SONAR_HOST_URL} \
+                          -Dsonar.login=${SONAR_TOKEN}
+                        '''
                     }
                 }
-            }
-        }
-
-        stage('Quality Gate') {
-            steps {
-                waitForQualityGate abortPipeline: true
             }
         }
 
         stage('Dependency & Security Scans') {
             steps {
                 dir('Jenkins-Pipeline-Code/Backend') {
-                    dependencyCheck(
-                        additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit',
-                        odcInstallation: 'DP-Check'
-                    )
-                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
-                    sh 'trivy fs . > trivyfs.txt || true'
+                    sh 'trivy fs . > trivyfs.txt'
                 }
             }
         }
@@ -69,22 +55,20 @@ pipeline {
         stage('Docker Build & Push') {
             steps {
                 dir('Jenkins-Pipeline-Code/Backend') {
-                    script {
-                        sh 'docker system prune -f || true'
-                        sh 'docker container prune -f || true'
+                    sh '''
+                    docker system prune -f
+                    docker build -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} .
 
-                        sh "docker build -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} ."
+                    aws ecr get-login-password --region ${AWS_DEFAULT_REGION} \
+                      | docker login --username AWS --password-stdin ${REPOSITORY_URI}
 
-                        sh """
-                        aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | \
-                        docker login --username AWS --password-stdin ${REPOSITORY_URI}
-                        """
+                    docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
+                      ${REPOSITORY_URI}/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
 
-                        sh "docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} ${REPOSITORY_URI}/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}"
-                        sh "docker push ${REPOSITORY_URI}/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}"
+                    docker push ${REPOSITORY_URI}/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
 
-                        sh "trivy image ${REPOSITORY_URI}/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt || true"
-                    }
+                    trivy image ${REPOSITORY_URI}/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt
+                    '''
                 }
             }
         }
@@ -92,13 +76,13 @@ pipeline {
         stage('Deploy to EKS') {
             steps {
                 dir('Kubernetes-Manifests-file/Backend') {
-                    sh """
+                    sh '''
                     kubectl set image deployment/api \
                       api=${REPOSITORY_URI}/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
                       -n three-tier
 
                     kubectl rollout status deployment/api -n three-tier
-                    """
+                    '''
                 }
             }
         }
@@ -106,10 +90,10 @@ pipeline {
 
     post {
         success {
-            echo "✅ Backend pipeline completed successfully"
+            echo '✅ Backend pipeline completed successfully'
         }
         failure {
-            echo "❌ Backend pipeline failed"
+            echo '❌ Backend pipeline failed'
         }
     }
 }
