@@ -16,54 +16,75 @@ pipeline {
     }
 
     stages {
+
         stage('Clean Workspace') {
             steps {
-                cleanWs()
+                cleanWs()  // Clean first, then checkout
+            }
+        }
+
+        stage('Checkout Source') {
+            steps {
+                checkout scm
+                sh 'echo "=== Workspace Contents ==="'
+                sh 'ls -R .'
             }
         }
 
         stage('Trivy Filesystem Scan') {
             steps {
                 dir('backend') {
-                    sh 'trivy fs . > trivyfs.txt || true'
+                    sh 'trivy fs . > trivyfs.txt'
                 }
             }
         }
 
         stage('Docker Build & Push') {
             steps {
-                dir('backend') {
-                    script {
-                        // Clean old Docker cache
-                        sh 'docker system prune -f'
-
-                        // Build Docker image
-                        sh 'docker build -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} .'
+                script {
+                    dir('backend') {
+                        sh 'echo "=== Backend Directory ==="'
+                        sh 'pwd'
+                        sh 'ls -la'
+                        // Ensure Dockerfile exists
+                        sh 'if [ ! -f Dockerfile ]; then echo "ERROR: Dockerfile missing"; exit 1; fi'
                     }
 
-                    // AWS ECR Login and Push using Jenkins credentials
+                    // Prune old images
+                    sh 'docker system prune -f'
+
+                    // Build Docker image
+                    sh """
+                        docker build \
+                        -f ${WORKSPACE}/backend/Dockerfile \
+                        -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
+                        ${WORKSPACE}/backend
+                    """
+
+                    // --- AWS ECR login using Jenkins credentials ---
                     withCredentials([
                         usernamePassword(
-                            credentialsId: 'aws-creds', // Replace with your actual Jenkins credentials ID
+                            credentialsId: 'Access Key ID Secret Access Key', // your Jenkins credentials
                             usernameVariable: 'AWS_ACCESS_KEY_ID',
                             passwordVariable: 'AWS_SECRET_ACCESS_KEY'
                         )
                     ]) {
                         sh """
-                            echo "Logging in to AWS ECR..."
                             aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | \
                             docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
-
-                            echo "Tagging image..."
-                            docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
-
-                            echo "Pushing image to ECR..."
-                            docker push ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
-
-                            echo "Running Trivy image scan..."
-                            trivy image ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt || true
                         """
                     }
+
+                    // Tag and push image
+                    sh """
+                        docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
+                        docker push ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
+                    """
+
+                    // Trivy scan image
+                    sh """
+                        trivy image ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt
+                    """
                 }
             }
         }
@@ -71,9 +92,9 @@ pipeline {
         stage('Deploy to EKS') {
             steps {
                 sh """
-                  aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name my-eks-cluster
-                  kubectl set image deployment/api api=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} -n default
-                  kubectl rollout status deployment/api -n default
+                    aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name my-eks-cluster
+                    kubectl set image deployment/api api=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} -n default
+                    kubectl rollout status deployment/api -n default
                 """
             }
         }
