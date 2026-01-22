@@ -97,6 +97,9 @@ pipeline {
                             --name my-eks-cluster \
                             --kubeconfig ${KUBECONFIG}
 
+                        # Fix API version compatibility (v1alpha1 -> v1beta1)
+                        sed -i 's/client.authentication.k8s.io\\/v1alpha1/client.authentication.k8s.io\\/v1beta1/g' ${KUBECONFIG}
+
                         export KUBECONFIG=${KUBECONFIG}
 
                         # Verify access
