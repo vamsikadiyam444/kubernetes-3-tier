@@ -9,7 +9,7 @@ pipeline {
     environment {
         AWS_DEFAULT_REGION = 'us-east-1'
         AWS_ECR_REPO_NAME  = 'my-app-repo'
-        KUBECONFIG         = "${WORKSPACE}/.kube/config" // Use workspace kubeconfig
+        KUBECONFIG = "${WORKSPACE}/.kube/config"  // Use workspace kubeconfig
     }
 
     parameters {
@@ -52,15 +52,12 @@ pipeline {
 
                     sh 'docker system prune -f'
 
-                    // Build Docker image
                     sh """
-                        docker build \
-                        -f ${WORKSPACE}/backend/Dockerfile \
-                        -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
-                        ${WORKSPACE}/backend
+                        docker build -f ${WORKSPACE}/backend/Dockerfile \
+                                     -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
+                                     ${WORKSPACE}/backend
                     """
 
-                    // AWS ECR login
                     withCredentials([
                         string(credentialsId: 'Access Key ID', variable: 'AWS_ACCESS_KEY_ID'),
                         string(credentialsId: 'Secret Access Key', variable: 'AWS_SECRET_ACCESS_KEY')
@@ -71,13 +68,12 @@ pipeline {
                         """
                     }
 
-                    // Tag and push
                     sh """
-                        docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
+                        docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
+                                   ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
                         docker push ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
                     """
 
-                    // Trivy scan of the image
                     sh """
                         trivy image ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt
                     """
@@ -92,26 +88,28 @@ pipeline {
                     string(credentialsId: 'Secret Access Key', variable: 'AWS_SECRET_ACCESS_KEY')
                 ]) {
                     sh """
-                        # Ensure kubeconfig directory exists
+                        # Ensure workspace kubeconfig directory exists
                         mkdir -p ${WORKSPACE}/.kube
 
-                        # Always generate a fresh kubeconfig for this pipeline run
+                        # Generate kubeconfig
                         aws eks update-kubeconfig \
                             --region ${AWS_DEFAULT_REGION} \
                             --name my-eks-cluster \
                             --kubeconfig ${KUBECONFIG}
 
+                        # Force apiVersion to v1beta1 using yq
+                        yq e '.users[].user.exec.apiVersion = "client.authentication.k8s.io/v1beta1"' -i ${KUBECONFIG}
+
                         export KUBECONFIG=${KUBECONFIG}
 
-                        # Verify access
+                        # Verify cluster access
                         kubectl get nodes
 
-                        # Deploy the new Docker image
+                        # Deploy the image
                         kubectl set image deployment/api \
                             api=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
                             -n default
 
-                        # Wait for rollout to complete
                         kubectl rollout status deployment/api -n default
                     """
                 }
