@@ -17,6 +17,16 @@ pipeline {
 
     stages {
 
+        stage('Checkout Source') {
+            steps {
+                checkout scm
+                sh '''
+                  echo "=== Workspace Contents ==="
+                  ls -R .
+                '''
+            }
+        }
+
         stage('Clean Workspace') {
             steps {
                 cleanWs()
@@ -36,7 +46,6 @@ pipeline {
                 dir('backend') {
                     script {
                         sh 'docker system prune -f'
-
                         sh "docker build -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} ."
 
                         sh """
