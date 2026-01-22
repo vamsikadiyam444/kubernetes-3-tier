@@ -9,7 +9,8 @@ pipeline {
     environment {
         AWS_DEFAULT_REGION = 'us-east-1'
         AWS_ECR_REPO_NAME  = 'my-app-repo'
-        KUBECONFIG = '/home/jenkins/.kube/config' // Explicitly set kubeconfig
+        // Use workspace kubeconfig to avoid /home/jenkins permission issues
+        KUBECONFIG = "${WORKSPACE}/.kube/config"
     }
 
     parameters {
@@ -80,21 +81,28 @@ pipeline {
 
         stage('Deploy to EKS') {
             steps {
-                // Use Jenkins credentials and explicit KUBECONFIG
                 withCredentials([
                     string(credentialsId: 'Access Key ID', variable: 'AWS_ACCESS_KEY_ID'),
                     string(credentialsId: 'Secret Access Key', variable: 'AWS_SECRET_ACCESS_KEY')
                 ]) {
                     sh """
-                        # Ensure kubeconfig exists and v1beta1 is set
+                        # Ensure workspace kubeconfig directory exists
+                        mkdir -p ${WORKSPACE}/.kube
+
+                        # Generate kubeconfig if it doesn't exist
                         if [ ! -f \$KUBECONFIG ]; then
-                            aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name my-eks-cluster
-                            sed -i 's/client.authentication.k8s.io\\/v1alpha1/client.authentication.k8s.io\\/v1beta1/' \$KUBECONFIG
+                            aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name my-eks-cluster --kubeconfig \$KUBECONFIG
                         fi
 
-                        kubectl get nodes
-                        kubectl set image deployment/api api=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} -n default
-                        kubectl rollout status deployment/api -n default
+                        # Replace old apiVersion for authentication
+                        sed -i 's/client.authentication.k8s.io\\/v1alpha1/client.authentication.k8s.io\\/v1beta1/' \$KUBECONFIG
+
+                        # Verify cluster access
+                        kubectl --kubeconfig \$KUBECONFIG get nodes
+
+                        # Deploy the image
+                        kubectl --kubeconfig \$KUBECONFIG set image deployment/api api=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} -n default
+                        kubectl --kubeconfig \$KUBECONFIG rollout status deployment/api -n default
                     """
                 }
             }
