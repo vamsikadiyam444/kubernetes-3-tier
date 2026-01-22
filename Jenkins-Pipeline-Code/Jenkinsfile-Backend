@@ -94,8 +94,8 @@ pipeline {
                             aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name my-eks-cluster --kubeconfig \$KUBECONFIG
                         fi
 
-                        # Replace old apiVersion for authentication
-                        sed -i 's/client.authentication.k8s.io\\/v1alpha1/client.authentication.k8s.io\\/v1beta1/' \$KUBECONFIG
+                        # Use yq to safely update apiVersion for exec (v1alpha1 -> v1beta1)
+                        yq e '.users[].user.exec.apiVersion = "client.authentication.k8s.io/v1beta1"' -i \$KUBECONFIG
 
                         # Verify cluster access
                         kubectl --kubeconfig \$KUBECONFIG get nodes
