@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
       - name: api
-        image: 529589763090.dkr.ecr.us-east-1.amazonaws.com/mybe-app:1
+        image: 529589763090.dkr.ecr.us-east-1.amazonaws.com/my-app-repo:BUILD_NUMBER
         imagePullPolicy: Always
         env:
           - name: MONGO_CONN_STR
