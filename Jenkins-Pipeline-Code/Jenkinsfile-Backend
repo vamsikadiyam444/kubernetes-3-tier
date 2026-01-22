@@ -9,7 +9,7 @@ pipeline {
     environment {
         AWS_DEFAULT_REGION = 'us-east-1'
         AWS_ECR_REPO_NAME  = 'my-app-repo'
-        KUBECONFIG = "${WORKSPACE}/.kube/config"  // Use workspace kubeconfig
+        KUBECONFIG = "${WORKSPACE}/.kube/config" // workspace kubeconfig
     }
 
     parameters {
@@ -91,26 +91,25 @@ pipeline {
                         # Ensure workspace kubeconfig directory exists
                         mkdir -p ${WORKSPACE}/.kube
 
-                        # Generate kubeconfig
+                        # Generate kubeconfig for EKS cluster
                         aws eks update-kubeconfig \
                             --region ${AWS_DEFAULT_REGION} \
                             --name my-eks-cluster \
                             --kubeconfig ${KUBECONFIG}
 
-                        # Force apiVersion to v1beta1 using yq
-                        yq e '.users[].user.exec.apiVersion = "client.authentication.k8s.io/v1beta1"' -i ${KUBECONFIG}
-
                         export KUBECONFIG=${KUBECONFIG}
 
-                        # Verify cluster access
+                        # Verify access
                         kubectl get nodes
 
-                        # Deploy the image
-                        kubectl set image deployment/api \
-                            api=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
-                            -n default
+                        # Update deployment.yaml with the correct image
+                        sed -i "s|image: .*|image: ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" ${WORKSPACE}/k8s/deployment.yaml
 
-                        kubectl rollout status deployment/api -n default
+                        # Apply deployment
+                        kubectl apply -f ${WORKSPACE}/k8s/deployment.yaml -n three-tier
+
+                        # Wait for rollout
+                        kubectl rollout status deployment/api -n three-tier
                     """
                 }
             }
