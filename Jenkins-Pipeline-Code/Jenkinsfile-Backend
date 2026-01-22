@@ -43,33 +43,43 @@ pipeline {
 
         stage('Docker Build & Push') {
             steps {
-                dir('backend') {
-                    script {
-                        sh 'docker system prune -f'
-                        sh "docker build -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} ."
+                script {
+                    // clean up local dangling images
+                    sh 'docker system prune -f'
 
-                        sh """
-                          aws ecr get-login-password --region ${AWS_DEFAULT_REGION} |
-                          docker login --username AWS --password-stdin \
-                          ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
-                        """
+                    // build using full path
+                    sh """
+                      docker build \
+                        -f ${WORKSPACE}/backend/Dockerfile \
+                        -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
+                        ${WORKSPACE}/backend
+                    """
 
-                        sh """
-                          docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
-                          ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
-                        """
+                    // login to ECR
+                    sh """
+                      aws ecr get-login-password --region ${AWS_DEFAULT_REGION} |
+                      docker login --username AWS --password-stdin \
+                      ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+                    """
 
-                        sh """
-                          docker push \
-                          ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
-                        """
+                    // tag the image
+                    sh """
+                      docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
+                        ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
+                    """
 
-                        sh """
-                          trivy image \
-                          ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
-                          > trivyimage.txt
-                        """
-                    }
+                    // push
+                    sh """
+                      docker push \
+                        ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
+                    """
+
+                    // image scanning with trivy
+                    sh """
+                      trivy image \
+                        ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
+                        > trivyimage.txt
+                    """
                 }
             }
         }
@@ -85,6 +95,7 @@ pipeline {
                 """
             }
         }
+
     }
 
     post {
