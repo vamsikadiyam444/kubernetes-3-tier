@@ -61,13 +61,10 @@ pipeline {
                         ${WORKSPACE}/backend
                     """
 
-                    // --- AWS ECR login using Jenkins credentials ---
+                    // --- AWS ECR login using Secret Text credentials ---
                     withCredentials([
-                        usernamePassword(
-                            credentialsId: 'Access Key ID Secret Access Key', // your Jenkins credentials
-                            usernameVariable: 'AWS_ACCESS_KEY_ID',
-                            passwordVariable: 'AWS_SECRET_ACCESS_KEY'
-                        )
+                        string(credentialsId: 'Access Key ID', variable: 'AWS_ACCESS_KEY_ID'),
+                        string(credentialsId: 'Secret Access Key', variable: 'AWS_SECRET_ACCESS_KEY')
                     ]) {
                         sh """
                             aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | \
