@@ -64,18 +64,18 @@ pipeline {
                     ]) {
                         sh """
                             aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | \
-                            docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+                            docker login --username AWS --password-stdin ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
                         """
                     }
 
                     sh """
                         docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
-                                   ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
-                        docker push ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
+                                   ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
+                        docker push ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
                     """
 
                     sh """
-                        trivy image ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt
+                        trivy image ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt
                     """
                 }
             }
@@ -91,14 +91,38 @@ pipeline {
                         # Ensure workspace kubeconfig directory exists
                         mkdir -p ${WORKSPACE}/.kube
 
-                        # Generate kubeconfig for EKS cluster
-                        aws eks update-kubeconfig \
-                            --region ${AWS_DEFAULT_REGION} \
-                            --name my-eks-cluster \
-                            --kubeconfig ${KUBECONFIG}
-
-                        # Fix API version compatibility (v1alpha1 -> v1beta1)
-                        sed -i 's/client.authentication.k8s.io\\/v1alpha1/client.authentication.k8s.io\\/v1beta1/g' ${KUBECONFIG}
+                        # Create kubeconfig manually with correct API version
+                        cat > ${KUBECONFIG} <<EOF
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: \$(aws eks describe-cluster --name my-eks-cluster --region ${AWS_DEFAULT_REGION} --query 'cluster.certificateAuthority.data' --output text)
+    server: \$(aws eks describe-cluster --name my-eks-cluster --region ${AWS_DEFAULT_REGION} --query 'cluster.endpoint' --output text)
+  name: arn:aws:eks:${AWS_DEFAULT_REGION}:${params.ACCOUNT_ID}:cluster/my-eks-cluster
+contexts:
+- context:
+    cluster: arn:aws:eks:${AWS_DEFAULT_REGION}:${params.ACCOUNT_ID}:cluster/my-eks-cluster
+    user: arn:aws:eks:${AWS_DEFAULT_REGION}:${params.ACCOUNT_ID}:cluster/my-eks-cluster
+  name: arn:aws:eks:${AWS_DEFAULT_REGION}:${params.ACCOUNT_ID}:cluster/my-eks-cluster
+current-context: arn:aws:eks:${AWS_DEFAULT_REGION}:${params.ACCOUNT_ID}:cluster/my-eks-cluster
+kind: Config
+preferences: {}
+users:
+- name: arn:aws:eks:${AWS_DEFAULT_REGION}:${params.ACCOUNT_ID}:cluster/my-eks-cluster
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      args:
+      - eks
+      - get-token
+      - --cluster-name
+      - my-eks-cluster
+      - --region
+      - ${AWS_DEFAULT_REGION}
+      command: aws
+      interactiveMode: IfAvailable
+      provideClusterInfo: false
+EOF
 
                         export KUBECONFIG=${KUBECONFIG}
 
@@ -106,7 +130,7 @@ pipeline {
                         kubectl get nodes
 
                         # Update deployment.yaml with the correct image
-                        sed -i "s|image: .*|image: ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" ${WORKSPACE}/k8s/deployment.yaml
+                        sed -i "s|image: .*|image: ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" ${WORKSPACE}/k8s/deployment.yaml
 
                         # Apply deployment
                         kubectl apply -f ${WORKSPACE}/k8s/deployment.yaml -n three-tier
