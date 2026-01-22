@@ -17,17 +17,17 @@ pipeline {
 
     stages {
 
-        stage('Checkout Source') {
+        stage('Clean Workspace') {
             steps {
-                echo '=== Workspace Contents ==='
-                checkout scm
-                sh 'ls -R .'
+                cleanWs()  // Clean first, then checkout
             }
         }
 
-        stage('Clean Workspace') {
+        stage('Checkout Source') {
             steps {
-                cleanWs()
+                checkout scm
+                sh 'echo "=== Workspace Contents ==="'
+                sh 'ls -R .'
             }
         }
 
@@ -42,18 +42,18 @@ pipeline {
         stage('Docker Build & Push') {
             steps {
                 script {
-                    // Confirm Dockerfile exists and list contents
                     dir('backend') {
                         sh 'echo "=== Backend Directory ==="'
                         sh 'pwd'
                         sh 'ls -la'
-                        sh 'cat Dockerfile'
+                        // Ensure Dockerfile exists
+                        sh 'if [ ! -f Dockerfile ]; then echo "ERROR: Dockerfile missing"; exit 1; fi'
                     }
 
                     // Prune old images
                     sh 'docker system prune -f'
 
-                    // Build Docker image (explicit Dockerfile path and build context)
+                    // Build Docker image
                     sh """
                         docker build \
                         -f ${WORKSPACE}/backend/Dockerfile \
@@ -61,19 +61,17 @@ pipeline {
                         ${WORKSPACE}/backend
                     """
 
-                    // Login to ECR
+                    // ECR login, tag, push
                     sh """
                         aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | \
                         docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
                     """
-
-                    // Tag & Push Docker image to ECR
                     sh """
                         docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
                         docker push ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
                     """
 
-                    // Trivy scan on the Docker image
+                    // Trivy scan image
                     sh """
                         trivy image ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt
                     """
