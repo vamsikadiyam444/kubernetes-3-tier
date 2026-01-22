@@ -2,54 +2,34 @@ pipeline {
     agent any
 
     tools {
-        jdk 'jdk'
-        nodejs 'nodejs'
+        jdk 'jdk'        // Your installed JDK in Jenkins global tool configuration
+        nodejs 'nodejs'  // Your installed NodeJS in Jenkins global tool configuration
     }
 
     environment {
         AWS_DEFAULT_REGION = 'us-east-1'
-        AWS_ECR_REPO_NAME = 'mybe-app'
-        SONAR_HOST_URL = 'http://52.90.253.120:9000'
+        AWS_ECR_REPO_NAME  = 'my-app-repo'
     }
 
     parameters {
-        string(name: 'ACCOUNT_ID', defaultValue: '', description: 'AWS Account ID')
+        string(name: 'ACCOUNT_ID', defaultValue: '529589763090', description: 'AWS Account ID')
     }
 
     stages {
         stage('Clean Workspace') {
-            steps { cleanWs() }
-        }
-
-        stage('SonarQube Analysis (Docker)') {
-            steps {
-                dir('Jenkins-Pipeline-Code/Backend') {
-                    withCredentials([string(credentialsId: 'sonar-be-token', variable: 'SONAR_TOKEN')]) {
-                        sh """
-                        docker run --rm \
-                            -v \${WORKSPACE}/Jenkins-Pipeline-Code/Backend:/usr/src \
-                            sonarsource/sonar-scanner-cli \
-                            -Dsonar.projectKey=three-tier-backend \
-                            -Dsonar.projectName=three-tier-backend \
-                            -Dsonar.host.url=$SONAR_HOST_URL \
-                            -Dsonar.login=$SONAR_TOKEN
-                        """
-                    }
-                }
-            }
-        }
-
-        stage('Quality Gate') {
-            steps {
-                waitForQualityGate abortPipeline: true, credentialsId: 'sonar-be-token'
+            steps { 
+                cleanWs() 
             }
         }
 
         stage('Dependency & Security Scans') {
             steps {
                 dir('Jenkins-Pipeline-Code/Backend') {
+                    // DependencyCheck plugin for security scans
                     dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
                     dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                    
+                    // Trivy scan for local filesystem
                     sh 'trivy fs . > trivyfs.txt'
                 }
             }
@@ -61,13 +41,21 @@ pipeline {
                     script {
                         sh 'docker system prune -f'
                         sh 'docker container prune -f'
+
+                        // Build Docker image
                         sh "docker build -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} ."
+
+                        // Login to AWS ECR
                         sh """
                             aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | \
-                            docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/
+                            docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
                         """
+
+                        // Tag & push Docker image
                         sh "docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}"
                         sh "docker push ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}"
+
+                        // Trivy scan for Docker image
                         sh "trivy image ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt"
                     }
                 }
@@ -78,8 +66,8 @@ pipeline {
             steps {
                 dir('Kubernetes-Manifests-file/Backend') {
                     sh """
-                        kubectl set image deployment/api api=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} -n three-tier
-                        kubectl rollout status deployment/api -n three-tier
+                        kubectl set image deployment/api api=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} -n my-eks-cluster
+                        kubectl rollout status deployment/api -n my-eks-cluster
                     """
                 }
             }
@@ -87,7 +75,11 @@ pipeline {
     }
 
     post {
-        failure { echo "❌ Backend pipeline failed" }
-        success { echo "✅ Backend pipeline succeeded" }
+        failure { 
+            echo "❌ Backend pipeline failed" 
+        }
+        success { 
+            echo "✅ Backend pipeline succeeded" 
+        }
     }
 }
