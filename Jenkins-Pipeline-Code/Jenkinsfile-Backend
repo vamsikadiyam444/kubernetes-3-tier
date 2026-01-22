@@ -16,9 +16,21 @@ pipeline {
     }
 
     stages {
+
         stage('Clean Workspace') {
             steps {
                 cleanWs()
+            }
+        }
+
+        stage('Docker Test') {
+            steps {
+                sh '''
+                  echo "Docker version:"
+                  docker --version
+                  echo "Docker running containers:"
+                  docker ps
+                '''
             }
         }
 
