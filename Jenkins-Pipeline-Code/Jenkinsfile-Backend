@@ -88,11 +88,17 @@ pipeline {
 
         stage('Deploy to EKS') {
             steps {
-                sh """
-                    aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name my-eks-cluster
-                    kubectl set image deployment/api api=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} -n default
-                    kubectl rollout status deployment/api -n default
-                """
+                // Wrap the EKS deploy inside the credentials block
+                withCredentials([
+                    string(credentialsId: 'Access Key ID', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Secret Access Key', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    sh """
+                        aws eks update-kubeconfig --region ${AWS_DEFAULT_REGION} --name my-eks-cluster
+                        kubectl set image deployment/api api=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} -n default
+                        kubectl rollout status deployment/api -n default
+                    """
+                }
             }
         }
     }
