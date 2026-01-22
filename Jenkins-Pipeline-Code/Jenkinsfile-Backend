@@ -18,6 +18,18 @@ pipeline {
 
     stages {
 
+        stage('Prepare Workspace') {
+            steps {
+                echo "🔹 Preparing workspace and validating environment..."
+                sh """
+                    echo "Workspace path: ${WORKSPACE}"
+                    mkdir -p ${WORKSPACE}/.kube
+                    echo "AWS region: ${AWS_DEFAULT_REGION}"
+                    echo "ECR repo: ${AWS_ECR_REPO_NAME}"
+                """
+            }
+        }
+
         stage('Clean Workspace') {
             steps {
                 cleanWs()
