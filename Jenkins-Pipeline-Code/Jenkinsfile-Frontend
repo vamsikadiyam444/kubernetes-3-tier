@@ -191,7 +191,7 @@ EOF
                         \${KUBECTL_BIN} rollout status deployment/frontend -n three-tier
 
                         echo "=== Get Service Info ==="
-                        \${KUBECTL_BIN} get svc frontend -n three-tier
+                        \${KUBECTL_BIN} get svc frontend-service -n three-tier
                     """
                 }
             }
