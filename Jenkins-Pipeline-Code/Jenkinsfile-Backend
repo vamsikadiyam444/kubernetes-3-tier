@@ -119,62 +119,84 @@ pipeline {
            UPDATED DEPLOY STAGE
            ======================= */
         stage('Deploy to EKS') {
-            steps {
-                withCredentials([
-                    string(credentialsId: 'Access Key ID', variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'Secret Access Key', variable: 'AWS_SECRET_ACCESS_KEY')
-                ]) {
-                    sh """
-                        set -e
-                        
-                        echo "=== Installing kubectl v1.30 ==="
-                        curl -LO "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl"
-                        chmod +x kubectl
-                        KUBECTL_BIN=\${WORKSPACE}/kubectl
-                        
-                        echo "=== kubectl Version ==="
-                        \${KUBECTL_BIN} version --client
-                        
-                        echo "=== Setting up kubeconfig ==="
-                        mkdir -p ${WORKSPACE}/.kube
+    steps {
+        withCredentials([
+            string(credentialsId: 'Access Key ID', variable: 'AWS_ACCESS_KEY_ID'),
+            string(credentialsId: 'Secret Access Key', variable: 'AWS_SECRET_ACCESS_KEY')
+        ]) {
+            sh """
+                set -e
+                
+                echo "=== Installing kubectl v1.30 ==="
+                curl -LO "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl"
+                chmod +x kubectl
+                KUBECTL_BIN=\${WORKSPACE}/kubectl
+                \${KUBECTL_BIN} version --client
+                
+                echo "=== Get cluster info ==="
+                CERT_DATA=\$(aws eks describe-cluster \
+                    --name my-eks-cluster \
+                    --region us-east-1 \
+                    --query 'cluster.certificateAuthority.data' \
+                    --output text)
 
-                        aws eks update-kubeconfig \
-                            --region ${AWS_DEFAULT_REGION} \
-                            --name my-eks-cluster \
-                            --kubeconfig ${KUBECONFIG}
+                ENDPOINT=\$(aws eks describe-cluster \
+                    --name my-eks-cluster \
+                    --region us-east-1 \
+                    --query 'cluster.endpoint' \
+                    --output text)
+                
+                echo "=== Creating kubeconfig ==="
+                mkdir -p ${WORKSPACE}/.kube
+                
+                cat > ${KUBECONFIG} <<EOF
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: \${CERT_DATA}
+    server: \${ENDPOINT}
+  name: my-cluster
+contexts:
+- context:
+    cluster: my-cluster
+    user: my-user
+  name: my-context
+current-context: my-context
+kind: Config
+preferences: {}
+users:
+- name: my-user
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: aws
+      args:
+      - eks
+      - get-token
+      - --cluster-name
+      - my-eks-cluster
+      - --region
+      - us-east-1
+EOF
 
-                        # FIX: Replace v1alpha1 with v1beta1
-                        sed -i 's/v1alpha1/v1beta1/g' ${KUBECONFIG}
+                export KUBECONFIG=${KUBECONFIG}
+                
+                echo "=== Testing authentication ==="
+                aws eks get-token --cluster-name my-eks-cluster --region us-east-1
 
-                        export KUBECONFIG=${KUBECONFIG}
-                        
-                        echo "=== Fixed kubeconfig ==="
-                        cat ${KUBECONFIG}
+                echo "=== Verifying cluster access ==="
+                \${KUBECTL_BIN} get nodes
 
-                        echo "=== Verifying cluster access ==="
-                        \${KUBECTL_BIN} get nodes
+                echo "=== Updating deployment image ==="
+                sed -i "s|image: .*|image: ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" \
+                ${WORKSPACE}/k8s/deployment.yaml
 
-                        echo "=== Updating deployment image ==="
-                        sed -i "s|image: .*|image: ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" \
-                        ${WORKSPACE}/k8s/deployment.yaml
+                echo "=== Applying deployment ==="
+                \${KUBECTL_BIN} apply -f ${WORKSPACE}/k8s/deployment.yaml -n three-tier
 
-                        echo "=== Applying deployment ==="
-                        \${KUBECTL_BIN} apply -f ${WORKSPACE}/k8s/deployment.yaml -n three-tier
-
-                        echo "=== Waiting for rollout ==="
-                        \${KUBECTL_BIN} rollout status deployment/api -n three-tier
-                    """
-                }
-            }
-        }
-    }
-
-    post {
-        success {
-            echo '✅ Backend pipeline succeeded'
-        }
-        failure {
-            echo '❌ Backend pipeline failed'
+                echo "=== Waiting for rollout ==="
+                \${KUBECTL_BIN} rollout status deployment/api -n three-tier
+            """
         }
     }
 }
