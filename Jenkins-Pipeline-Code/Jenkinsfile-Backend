@@ -18,6 +18,24 @@ pipeline {
 
     stages {
 
+        stage('Debug: Check Environment') {
+            steps {
+                sh '''
+                    echo "=== Hostname ==="
+                    hostname
+                    echo "=== Current User ==="
+                    whoami
+                    echo "=== AWS CLI Version ==="
+                    aws --version
+                    echo "=== kubectl (system) ==="
+                    which kubectl || echo "kubectl not found"
+                    kubectl version --client || true
+                    echo "=== aws-iam-authenticator ==="
+                    which aws-iam-authenticator || echo "aws-iam-authenticator not installed"
+                '''
+            }
+        }
+
         stage('Clean Workspace') {
             steps {
                 cleanWs()
@@ -27,32 +45,7 @@ pipeline {
         stage('Checkout Source') {
             steps {
                 checkout scm
-                sh 'echo "=== Workspace Contents ==="'
                 sh 'ls -R .'
-            }
-        }
-
-        stage('Debug: Check Environment') {
-            steps {
-                sh '''
-                    echo "=== Hostname ==="
-                    hostname
-
-                    echo "=== Current User ==="
-                    whoami
-
-                    echo "=== AWS CLI Version ==="
-                    aws --version
-
-                    echo "=== kubectl Version ==="
-                    kubectl version --client || true
-
-                    echo "=== Which kubectl ==="
-                    which kubectl || true
-
-                    echo "=== Check for aws-iam-authenticator ==="
-                    which aws-iam-authenticator || echo "aws-iam-authenticator not found"
-                '''
             }
         }
 
@@ -68,23 +61,15 @@ pipeline {
             steps {
                 script {
                     dir('backend') {
-                        sh '''
-                            echo "=== Backend Directory ==="
-                            pwd
-                            ls -la
-                            if [ ! -f Dockerfile ]; then
-                                echo "ERROR: Dockerfile missing"
-                                exit 1
-                            fi
-                        '''
+                        sh 'test -f Dockerfile'
                     }
 
                     sh 'docker system prune -f'
 
                     sh """
-                        docker build -f ${WORKSPACE}/backend/Dockerfile \
-                                     -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
-                                     ${WORKSPACE}/backend
+                        docker build \
+                          -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
+                          ${WORKSPACE}/backend
                     """
 
                     withCredentials([
@@ -100,56 +85,53 @@ pipeline {
 
                     sh """
                         docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
-                        ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
+                          ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
 
                         docker push \
-                        ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
+                          ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
                     """
 
                     sh """
                         trivy image \
-                        ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
-                        > trivyimage.txt
+                          ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
+                          > trivyimage.txt
                     """
                 }
             }
         }
 
-        /* =======================
-           UPDATED DEPLOY STAGE
-           ======================= */
         stage('Deploy to EKS') {
-    steps {
-        withCredentials([
-            string(credentialsId: 'Access Key ID', variable: 'AWS_ACCESS_KEY_ID'),
-            string(credentialsId: 'Secret Access Key', variable: 'AWS_SECRET_ACCESS_KEY')
-        ]) {
-            sh """
-                set -e
-                
-                echo "=== Installing kubectl v1.30 ==="
-                curl -LO "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl"
-                chmod +x kubectl
-                KUBECTL_BIN=\${WORKSPACE}/kubectl
-                \${KUBECTL_BIN} version --client
-                
-                echo "=== Get cluster info ==="
-                CERT_DATA=\$(aws eks describe-cluster \
-                    --name my-eks-cluster \
-                    --region us-east-1 \
-                    --query 'cluster.certificateAuthority.data' \
-                    --output text)
+            steps {
+                withCredentials([
+                    string(credentialsId: 'Access Key ID', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Secret Access Key', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    sh """
+                        set -e
 
-                ENDPOINT=\$(aws eks describe-cluster \
-                    --name my-eks-cluster \
-                    --region us-east-1 \
-                    --query 'cluster.endpoint' \
-                    --output text)
-                
-                echo "=== Creating kubeconfig ==="
-                mkdir -p ${WORKSPACE}/.kube
-                
-                cat > ${KUBECONFIG} <<EOF
+                        echo "=== Installing kubectl v1.30 ==="
+                        curl -sLO https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl
+                        chmod +x kubectl
+                        KUBECTL_BIN=\${WORKSPACE}/kubectl
+                        \${KUBECTL_BIN} version --client
+
+                        echo "=== Fetching EKS cluster info ==="
+                        CERT_DATA=\$(aws eks describe-cluster \
+                          --name my-eks-cluster \
+                          --region ${AWS_DEFAULT_REGION} \
+                          --query 'cluster.certificateAuthority.data' \
+                          --output text)
+
+                        ENDPOINT=\$(aws eks describe-cluster \
+                          --name my-eks-cluster \
+                          --region ${AWS_DEFAULT_REGION} \
+                          --query 'cluster.endpoint' \
+                          --output text)
+
+                        echo "=== Creating kubeconfig ==="
+                        mkdir -p ${WORKSPACE}/.kube
+
+                        cat > ${KUBECONFIG} <<EOF
 apiVersion: v1
 clusters:
 - cluster:
@@ -163,7 +145,6 @@ contexts:
   name: my-context
 current-context: my-context
 kind: Config
-preferences: {}
 users:
 - name: my-user
   user:
@@ -176,27 +157,38 @@ users:
       - --cluster-name
       - my-eks-cluster
       - --region
-      - us-east-1
+      - ${AWS_DEFAULT_REGION}
 EOF
 
-                export KUBECONFIG=${KUBECONFIG}
-                
-                echo "=== Testing authentication ==="
-                aws eks get-token --cluster-name my-eks-cluster --region us-east-1
+                        export KUBECONFIG=${KUBECONFIG}
 
-                echo "=== Verifying cluster access ==="
-                \${KUBECTL_BIN} get nodes
+                        echo "=== Auth test ==="
+                        aws eks get-token --cluster-name my-eks-cluster --region ${AWS_DEFAULT_REGION}
 
-                echo "=== Updating deployment image ==="
-                sed -i "s|image: .*|image: ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" \
-                ${WORKSPACE}/k8s/deployment.yaml
+                        echo "=== Cluster access check ==="
+                        \${KUBECTL_BIN} get nodes
 
-                echo "=== Applying deployment ==="
-                \${KUBECTL_BIN} apply -f ${WORKSPACE}/k8s/deployment.yaml -n three-tier
+                        echo "=== Updating deployment image ==="
+                        sed -i "s|image: .*|image: ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" \
+                        ${WORKSPACE}/k8s/deployment.yaml
 
-                echo "=== Waiting for rollout ==="
-                \${KUBECTL_BIN} rollout status deployment/api -n three-tier
-            """
+                        echo "=== Applying deployment ==="
+                        \${KUBECTL_BIN} apply -f ${WORKSPACE}/k8s/deployment.yaml -n three-tier
+
+                        echo "=== Waiting for rollout ==="
+                        \${KUBECTL_BIN} rollout status deployment/api -n three-tier
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Backend pipeline succeeded'
+        }
+        failure {
+            echo '❌ Backend pipeline failed'
         }
     }
 }
