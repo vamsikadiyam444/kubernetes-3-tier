@@ -121,7 +121,6 @@ pipeline {
                         echo "=== Creating AWS wrapper script ==="
                         cat > \${WORKSPACE}/aws-wrapper.sh <<'WRAPPER_EOF'
 #!/bin/bash
-# Wrapper to fix AWS CLI v1alpha1 output to v1beta1
 output=\$(/usr/local/bin/aws "\$@")
 if [[ "\$*" == *"get-token"* ]]; then
     echo "\$output" | sed 's/v1alpha1/v1beta1/g'
@@ -172,9 +171,6 @@ EOF
 
                         export KUBECONFIG=${KUBECONFIG}
                         
-                        echo "=== Testing wrapper ==="
-                        \${WORKSPACE}/aws-wrapper.sh eks get-token --cluster-name my-eks-cluster --region us-east-1
-                        
                         echo "=== Verifying cluster access ==="
                         \${KUBECTL_BIN} get nodes
 
@@ -188,8 +184,14 @@ EOF
                         echo "=== Applying deployment ==="
                         \${KUBECTL_BIN} apply -f ${WORKSPACE}/Kubernetes-Manifests-file/Backend/deployment.yaml -n three-tier
 
+                        echo "=== Applying service ==="
+                        \${KUBECTL_BIN} apply -f ${WORKSPACE}/Kubernetes-Manifests-file/Backend/service.yaml -n three-tier
+
                         echo "=== Waiting for rollout ==="
                         \${KUBECTL_BIN} rollout status deployment/api -n three-tier
+
+                        echo "=== Get Service Info ==="
+                        \${KUBECTL_BIN} get svc api -n three-tier
                     """
                 }
             }
