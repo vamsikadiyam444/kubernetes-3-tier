@@ -10,6 +10,7 @@ pipeline {
         AWS_DEFAULT_REGION = 'us-east-1'
         AWS_ECR_REPO_NAME  = 'my-app-repo'
         KUBECONFIG = "${WORKSPACE}/.kube/config"
+        REACT_APP_BACKEND_URL = '/api/tasks'  // Added this
     }
 
     parameters {
@@ -74,8 +75,10 @@ pipeline {
 
                     sh 'docker system prune -f'
 
+                    // Build with REACT_APP_BACKEND_URL build argument
                     sh """
                         docker build -f ${WORKSPACE}/frontend/Dockerfile \
+                                     --build-arg REACT_APP_BACKEND_URL=${REACT_APP_BACKEND_URL} \
                                      -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
                                      ${WORKSPACE}/frontend
                     """
