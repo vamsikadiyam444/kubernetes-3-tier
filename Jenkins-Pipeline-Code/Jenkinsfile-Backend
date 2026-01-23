@@ -108,29 +108,33 @@ pipeline {
                 ]) {
                     sh """
                         set -e
-
+                        
                         echo "=== Installing kubectl v1.30 ==="
                         curl -sLO https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl
                         chmod +x kubectl
                         KUBECTL_BIN=\${WORKSPACE}/kubectl
                         \${KUBECTL_BIN} version --client
-
+                        
+                        echo "=== Creating AWS wrapper script ==="
+                        cat > \${WORKSPACE}/aws-wrapper.sh <<'WRAPPER_EOF'
+#!/bin/bash
+output=\$(/usr/local/bin/aws "\$@")
+if [[ "\$*" == *"get-token"* ]]; then
+    echo "\$output" | sed 's/v1alpha1/v1beta1/g'
+else
+    echo "\$output"
+fi
+WRAPPER_EOF
+                        
+                        chmod +x \${WORKSPACE}/aws-wrapper.sh
+                        
                         echo "=== Fetching EKS cluster info ==="
-                        CERT_DATA=\$(aws eks describe-cluster \
-                          --name my-eks-cluster \
-                          --region ${AWS_DEFAULT_REGION} \
-                          --query 'cluster.certificateAuthority.data' \
-                          --output text)
-
-                        ENDPOINT=\$(aws eks describe-cluster \
-                          --name my-eks-cluster \
-                          --region ${AWS_DEFAULT_REGION} \
-                          --query 'cluster.endpoint' \
-                          --output text)
-
+                        CERT_DATA=\$(aws eks describe-cluster --name my-eks-cluster --region us-east-1 --query cluster.certificateAuthority.data --output text)
+                        ENDPOINT=\$(aws eks describe-cluster --name my-eks-cluster --region us-east-1 --query cluster.endpoint --output text)
+                        
                         echo "=== Creating kubeconfig ==="
                         mkdir -p ${WORKSPACE}/.kube
-
+                        
                         cat > ${KUBECONFIG} <<EOF
 apiVersion: v1
 clusters:
@@ -145,27 +149,29 @@ contexts:
   name: my-context
 current-context: my-context
 kind: Config
+preferences: {}
 users:
 - name: my-user
   user:
     exec:
       apiVersion: client.authentication.k8s.io/v1beta1
-      command: aws
+      command: \${WORKSPACE}/aws-wrapper.sh
       args:
       - eks
       - get-token
       - --cluster-name
       - my-eks-cluster
       - --region
-      - ${AWS_DEFAULT_REGION}
+      - us-east-1
+      env: null
 EOF
 
                         export KUBECONFIG=${KUBECONFIG}
-
-                        echo "=== Auth test ==="
-                        aws eks get-token --cluster-name my-eks-cluster --region ${AWS_DEFAULT_REGION}
-
-                        echo "=== Cluster access check ==="
+                        
+                        echo "=== Testing wrapper ==="
+                        \${WORKSPACE}/aws-wrapper.sh eks get-token --cluster-name my-eks-cluster --region us-east-1
+                        
+                        echo "=== Verifying cluster access ==="
                         \${KUBECTL_BIN} get nodes
 
                         echo "=== Updating deployment image ==="
