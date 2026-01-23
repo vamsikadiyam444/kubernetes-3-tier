@@ -9,7 +9,7 @@ pipeline {
     environment {
         AWS_DEFAULT_REGION = 'us-east-1'
         AWS_ECR_REPO_NAME  = 'my-app-repo'
-        KUBECONFIG = "${WORKSPACE}/.kube/config"
+        KUBECONFIG = "${WORKSPACE}/.kube/config" // workspace kubeconfig
     }
 
     parameters {
@@ -17,22 +17,6 @@ pipeline {
     }
 
     stages {
-
-        stage('Debug: Check Environment') {
-            steps {
-                sh '''
-                    echo "=== Hostname ==="
-                    hostname
-                    echo "=== User ==="
-                    whoami
-                    echo "=== AWS CLI ==="
-                    aws --version
-                    echo "=== kubectl (system) ==="
-                    which kubectl || true
-                    kubectl version --client || true
-                '''
-            }
-        }
 
         stage('Clean Workspace') {
             steps {
@@ -43,14 +27,36 @@ pipeline {
         stage('Checkout Source') {
             steps {
                 checkout scm
-                echo "=== Workspace Structure ==="
+                sh 'echo "=== Workspace Contents ==="'
                 sh 'ls -R .'
+            }
+        }
+
+        stage('Debug: Check Environment') {
+            steps {
+                sh '''
+                    echo "=== Hostname ==="
+                    hostname
+                    echo "=== Current User ==="
+                    whoami
+                    echo "=== AWS CLI Version ==="
+                    aws --version
+                    echo "=== kubectl Version ==="
+                    kubectl version --client
+                    echo "=== Which kubectl ==="
+                    which kubectl
+                    echo "=== Check for aws-iam-authenticator ==="
+                    which aws-iam-authenticator || echo "aws-iam-authenticator not found"
+                    if command -v aws-iam-authenticator &> /dev/null; then
+                        aws-iam-authenticator version
+                    fi
+                '''
             }
         }
 
         stage('Trivy Filesystem Scan') {
             steps {
-                dir('backend') {
+                dir('Backend') {
                     sh 'trivy fs . > trivyfs.txt'
                 }
             }
@@ -59,16 +65,19 @@ pipeline {
         stage('Docker Build & Push') {
             steps {
                 script {
-                    dir('backend') {
-                        sh 'test -f Dockerfile'
+                    dir('Backend') {
+                        sh 'echo "=== Backend Directory ==="'
+                        sh 'pwd'
+                        sh 'ls -la'
+                        sh 'if [ ! -f Dockerfile ]; then echo "ERROR: Dockerfile missing"; exit 1; fi'
                     }
 
                     sh 'docker system prune -f'
 
                     sh """
-                        docker build \
-                          -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
-                          backend
+                        docker build -f ${WORKSPACE}/Backend/Dockerfile \
+                                     -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
+                                     ${WORKSPACE}/Backend
                     """
 
                     withCredentials([
@@ -76,24 +85,19 @@ pipeline {
                         string(credentialsId: 'Secret Access Key', variable: 'AWS_SECRET_ACCESS_KEY')
                     ]) {
                         sh """
-                            aws ecr get-login-password --region ${AWS_DEFAULT_REGION} |
-                            docker login --username AWS --password-stdin \
-                            ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+                            aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | \
+                            docker login --username AWS --password-stdin ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
                         """
                     }
 
                     sh """
                         docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
-                          ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
-
-                        docker push \
-                          ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
+                                   ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
+                        docker push ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
                     """
 
                     sh """
-                        trivy image \
-                          ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
-                          > trivyimage.txt
+                        trivy image ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt
                     """
                 }
             }
@@ -107,55 +111,49 @@ pipeline {
                 ]) {
                     sh """
                         set -e
-
-                        echo "=== Install kubectl v1.30 ==="
+                        
+                        echo "=== Installing kubectl v1.30 ==="
                         curl -sLO https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl
                         chmod +x kubectl
                         KUBECTL_BIN=\${WORKSPACE}/kubectl
                         \${KUBECTL_BIN} version --client
-
-                        echo "=== Create AWS wrapper ==="
-                        cat > \${WORKSPACE}/aws-wrapper.sh <<'EOF'
+                        
+                        echo "=== Creating AWS wrapper script ==="
+                        cat > \${WORKSPACE}/aws-wrapper.sh <<'WRAPPER_EOF'
 #!/bin/bash
+# Wrapper to fix AWS CLI v1alpha1 output to v1beta1
 output=\$(/usr/local/bin/aws "\$@")
 if [[ "\$*" == *"get-token"* ]]; then
     echo "\$output" | sed 's/v1alpha1/v1beta1/g'
 else
     echo "\$output"
 fi
-EOF
+WRAPPER_EOF
+                        
                         chmod +x \${WORKSPACE}/aws-wrapper.sh
-
-                        echo "=== Fetch EKS cluster info ==="
-                        CERT_DATA=\$(aws eks describe-cluster \
-                          --name my-eks-cluster \
-                          --region ${AWS_DEFAULT_REGION} \
-                          --query cluster.certificateAuthority.data \
-                          --output text)
-
-                        ENDPOINT=\$(aws eks describe-cluster \
-                          --name my-eks-cluster \
-                          --region ${AWS_DEFAULT_REGION} \
-                          --query cluster.endpoint \
-                          --output text)
-
-                        echo "=== Create kubeconfig ==="
+                        
+                        echo "=== Fetching EKS cluster info ==="
+                        CERT_DATA=\$(aws eks describe-cluster --name my-eks-cluster --region us-east-1 --query cluster.certificateAuthority.data --output text)
+                        ENDPOINT=\$(aws eks describe-cluster --name my-eks-cluster --region us-east-1 --query cluster.endpoint --output text)
+                        
+                        echo "=== Creating kubeconfig ==="
                         mkdir -p ${WORKSPACE}/.kube
-
+                        
                         cat > ${KUBECONFIG} <<EOF
 apiVersion: v1
-kind: Config
 clusters:
-- name: my-cluster
-  cluster:
+- cluster:
     certificate-authority-data: \${CERT_DATA}
     server: \${ENDPOINT}
+  name: my-cluster
 contexts:
-- name: my-context
-  context:
+- context:
     cluster: my-cluster
     user: my-user
+  name: my-context
 current-context: my-context
+kind: Config
+preferences: {}
 users:
 - name: my-user
   user:
@@ -168,24 +166,29 @@ users:
       - --cluster-name
       - my-eks-cluster
       - --region
-      - ${AWS_DEFAULT_REGION}
+      - us-east-1
+      env: null
 EOF
 
                         export KUBECONFIG=${KUBECONFIG}
-
-                        echo "=== Verify cluster access ==="
+                        
+                        echo "=== Testing wrapper ==="
+                        \${WORKSPACE}/aws-wrapper.sh eks get-token --cluster-name my-eks-cluster --region us-east-1
+                        
+                        echo "=== Verifying cluster access ==="
                         \${KUBECTL_BIN} get nodes
 
-                        echo "=== Update deployment image ==="
-                        sed -i "s|image: .*|image: ${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" \
-                        ${WORKSPACE}/Kubernetes-Manifests-file/Backend/deployment.yaml
+                        echo "=== Ensure namespace exists ==="
+                        \${KUBECTL_BIN} get namespace three-tier \
+                          || \${KUBECTL_BIN} create namespace three-tier
 
-                        echo "=== Apply manifests ==="
-                        \${KUBECTL_BIN} apply \
-                          -f ${WORKSPACE}/Kubernetes-Manifests-file/Backend/deployment.yaml \
-                          -n three-tier
+                        echo "=== Updating deployment image ==="
+                        sed -i "s|image: .*|image: ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" ${WORKSPACE}/Backend/deployment.yaml
 
-                        echo "=== Wait for rollout ==="
+                        echo "=== Applying deployment ==="
+                        \${KUBECTL_BIN} apply -f ${WORKSPACE}/Backend/deployment.yaml -n three-tier
+
+                        echo "=== Waiting for rollout ==="
                         \${KUBECTL_BIN} rollout status deployment/api -n three-tier
                     """
                 }
@@ -194,11 +197,7 @@ EOF
     }
 
     post {
-        success {
-            echo '✅ Backend pipeline succeeded'
-        }
-        failure {
-            echo '❌ Backend pipeline failed'
-        }
+        success { echo '✅ Backend pipeline succeeded' }
+        failure { echo '❌ Backend pipeline failed' }
     }
 }
