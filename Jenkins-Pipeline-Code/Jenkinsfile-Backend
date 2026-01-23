@@ -183,10 +183,10 @@ EOF
                           || \${KUBECTL_BIN} create namespace three-tier
 
                         echo "=== Updating deployment image ==="
-                        sed -i "s|image: .*|image: ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" ${WORKSPACE}/backend/deployment.yaml
+                        sed -i "s|image: .*|image: ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" ${WORKSPACE}/Kubernetes-Manifests-file/Backend/deployment.yaml
 
                         echo "=== Applying deployment ==="
-                        \${KUBECTL_BIN} apply -f ${WORKSPACE}/backend/deployment.yaml -n three-tier
+                        \${KUBECTL_BIN} apply -f ${WORKSPACE}/Kubernetes-Manifests-file/Backend/deployment.yaml -n three-tier
 
                         echo "=== Waiting for rollout ==="
                         \${KUBECTL_BIN} rollout status deployment/api -n three-tier
