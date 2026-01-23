@@ -9,7 +9,7 @@ pipeline {
     environment {
         AWS_DEFAULT_REGION = 'us-east-1'
         AWS_ECR_REPO_NAME  = 'my-app-repo'
-        KUBECONFIG = "${WORKSPACE}/.kube/config" // workspace kubeconfig
+        KUBECONFIG = "${WORKSPACE}/.kube/config"
     }
 
     parameters {
@@ -17,18 +17,6 @@ pipeline {
     }
 
     stages {
-
-        stage('Prepare Workspace') {
-            steps {
-                echo "🔹 Preparing workspace and validating environment..."
-                sh """
-                    echo "Workspace path: ${WORKSPACE}"
-                    mkdir -p ${WORKSPACE}/.kube
-                    echo "AWS region: ${AWS_DEFAULT_REGION}"
-                    echo "ECR repo: ${AWS_ECR_REPO_NAME}"
-                """
-            }
-        }
 
         stage('Clean Workspace') {
             steps {
@@ -44,6 +32,34 @@ pipeline {
             }
         }
 
+        stage('Debug: Check Environment') {
+            steps {
+                sh '''
+                    echo "=== Hostname ==="
+                    hostname
+
+                    echo "=== Current User ==="
+                    whoami
+
+                    echo "=== AWS CLI Version ==="
+                    aws --version
+
+                    echo "=== kubectl Version ==="
+                    kubectl version --client || true
+
+                    echo "=== Which kubectl ==="
+                    which kubectl || true
+
+                    echo "=== Check for aws-iam-authenticator ==="
+                    which aws-iam-authenticator || echo "aws-iam-authenticator not found"
+
+                    if command -v aws-iam-authenticator &> /dev/null; then
+                        aws-iam-authenticator version
+                    fi
+                '''
+            }
+        }
+
         stage('Trivy Filesystem Scan') {
             steps {
                 dir('backend') {
@@ -56,10 +72,15 @@ pipeline {
             steps {
                 script {
                     dir('backend') {
-                        sh 'echo "=== Backend Directory ==="'
-                        sh 'pwd'
-                        sh 'ls -la'
-                        sh 'if [ ! -f Dockerfile ]; then echo "ERROR: Dockerfile missing"; exit 1; fi'
+                        sh '''
+                            echo "=== Backend Directory ==="
+                            pwd
+                            ls -la
+                            if [ ! -f Dockerfile ]; then
+                                echo "ERROR: Dockerfile missing"
+                                exit 1
+                            fi
+                        '''
                     }
 
                     sh 'docker system prune -f'
@@ -76,18 +97,23 @@ pipeline {
                     ]) {
                         sh """
                             aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | \
-                            docker login --username AWS --password-stdin ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+                            docker login --username AWS --password-stdin \
+                            ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
                         """
                     }
 
                     sh """
                         docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
-                                   ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
-                        docker push ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
+                        ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
+
+                        docker push \
+                        ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
                     """
 
                     sh """
-                        trivy image ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt
+                        trivy image \
+                        ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
+                        > trivyimage.txt
                     """
                 }
             }
@@ -100,55 +126,42 @@ pipeline {
                     string(credentialsId: 'Secret Access Key', variable: 'AWS_SECRET_ACCESS_KEY')
                 ]) {
                     sh """
-                        # Ensure workspace kubeconfig directory exists
+                        set -e
+
+                        echo "=== Installing kubectl v1.30 ==="
+                        curl -LO https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl
+                        chmod +x kubectl
+
+                        KUBECTL_BIN=\${WORKSPACE}/kubectl
+
+                        echo "=== kubectl Version ==="
+                        \${KUBECTL_BIN} version --client
+
+                        echo "=== Setting up kubeconfig ==="
                         mkdir -p ${WORKSPACE}/.kube
 
-                        # Create kubeconfig manually with correct API version
-                        cat > ${KUBECONFIG} <<EOF
-apiVersion: v1
-clusters:
-- cluster:
-    certificate-authority-data: \$(aws eks describe-cluster --name my-eks-cluster --region ${AWS_DEFAULT_REGION} --query 'cluster.certificateAuthority.data' --output text)
-    server: \$(aws eks describe-cluster --name my-eks-cluster --region ${AWS_DEFAULT_REGION} --query 'cluster.endpoint' --output text)
-  name: arn:aws:eks:${AWS_DEFAULT_REGION}:${params.ACCOUNT_ID}:cluster/my-eks-cluster
-contexts:
-- context:
-    cluster: arn:aws:eks:${AWS_DEFAULT_REGION}:${params.ACCOUNT_ID}:cluster/my-eks-cluster
-    user: arn:aws:eks:${AWS_DEFAULT_REGION}:${params.ACCOUNT_ID}:cluster/my-eks-cluster
-  name: arn:aws:eks:${AWS_DEFAULT_REGION}:${params.ACCOUNT_ID}:cluster/my-eks-cluster
-current-context: arn:aws:eks:${AWS_DEFAULT_REGION}:${params.ACCOUNT_ID}:cluster/my-eks-cluster
-kind: Config
-preferences: {}
-users:
-- name: arn:aws:eks:${AWS_DEFAULT_REGION}:${params.ACCOUNT_ID}:cluster/my-eks-cluster
-  user:
-    exec:
-      apiVersion: client.authentication.k8s.io/v1beta1
-      args:
-      - eks
-      - get-token
-      - --cluster-name
-      - my-eks-cluster
-      - --region
-      - ${AWS_DEFAULT_REGION}
-      command: aws
-      interactiveMode: IfAvailable
-      provideClusterInfo: false
-EOF
+                        aws eks update-kubeconfig \
+                            --region ${AWS_DEFAULT_REGION} \
+                            --name my-eks-cluster \
+                            --kubeconfig ${KUBECONFIG}
 
                         export KUBECONFIG=${KUBECONFIG}
 
-                        # Verify access
-                        kubectl get nodes
+                        echo "=== kubeconfig ==="
+                        cat ${KUBECONFIG}
 
-                        # Update deployment.yaml with the correct image
-                        sed -i "s|image: .*|image: ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" ${WORKSPACE}/k8s/deployment.yaml
+                        echo "=== Verifying cluster access ==="
+                        \${KUBECTL_BIN} get nodes
 
-                        # Apply deployment
-                        kubectl apply -f ${WORKSPACE}/k8s/deployment.yaml -n three-tier
+                        echo "=== Updating deployment image ==="
+                        sed -i "s|image: .*|image: ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" \
+                        ${WORKSPACE}/k8s/deployment.yaml
 
-                        # Wait for rollout
-                        kubectl rollout status deployment/api -n three-tier
+                        echo "=== Applying deployment ==="
+                        \${KUBECTL_BIN} apply -f ${WORKSPACE}/k8s/deployment.yaml -n three-tier
+
+                        echo "=== Waiting for rollout ==="
+                        \${KUBECTL_BIN} rollout status deployment/api -n three-tier
                     """
                 }
             }
@@ -156,7 +169,11 @@ EOF
     }
 
     post {
-        success { echo '✅ Backend pipeline succeeded' }
-        failure { echo '❌ Backend pipeline failed' }
+        success {
+            echo '✅ Backend pipeline succeeded'
+        }
+        failure {
+            echo '❌ Backend pipeline failed'
+        }
     }
 }
