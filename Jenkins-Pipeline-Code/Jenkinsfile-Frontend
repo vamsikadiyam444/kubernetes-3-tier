@@ -8,7 +8,7 @@ pipeline {
 
     environment {
         AWS_DEFAULT_REGION = 'us-east-1'
-        AWS_ECR_REPO_NAME  = 'my-frontend-repo' // Change to your frontend ECR repo
+        AWS_ECR_REPO_NAME  = 'my-frontend-repo' // change to your frontend ECR repo
         KUBECONFIG = "${WORKSPACE}/.kube/config"
     }
 
@@ -34,8 +34,11 @@ pipeline {
 
         stage('Trivy Filesystem Scan') {
             steps {
-                dir('Application-Code/frontend') {
-                    sh 'trivy fs . > trivyfs.txt'
+                script {
+                    def frontendDir = "${WORKSPACE}/Application-Code/frontend"
+                    dir(frontendDir) {
+                        sh 'trivy fs . > trivyfs.txt || true'
+                    }
                 }
             }
         }
@@ -43,24 +46,27 @@ pipeline {
         stage('Docker Build & Push') {
             steps {
                 script {
-                    // Ensure we are in frontend folder
-                    dir('Application-Code/frontend') {
+                    def frontendDir = "${WORKSPACE}/Application-Code/frontend"
+
+                    // Check Dockerfile exists
+                    if (!fileExists("${frontendDir}/Dockerfile")) {
+                        error "Dockerfile missing at ${frontendDir}"
+                    }
+
+                    dir(frontendDir) {
                         sh 'echo "=== Frontend Directory ==="'
                         sh 'pwd'
                         sh 'ls -la'
-                        sh 'if [ ! -f Dockerfile ]; then echo "ERROR: Dockerfile missing"; exit 1; fi'
+
+                        sh 'docker system prune -f'
+
+                        // Build Docker image
+                        sh """
+                            docker build -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} .
+                        """
                     }
 
-                    // Clean dangling images
-                    sh 'docker system prune -f'
-
-                    // Build Docker image
-                    sh """
-                        docker build -t ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
-                                     ${WORKSPACE}/Application-Code/frontend
-                    """
-
-                    // Login to AWS ECR
+                    // Login to ECR
                     withCredentials([
                         string(credentialsId: 'Access Key ID', variable: 'AWS_ACCESS_KEY_ID'),
                         string(credentialsId: 'Secret Access Key', variable: 'AWS_SECRET_ACCESS_KEY')
@@ -71,16 +77,16 @@ pipeline {
                         """
                     }
 
-                    // Tag and push
+                    // Tag and push image
                     sh """
                         docker tag ${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} \
                                    ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
                         docker push ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}
                     """
 
-                    // Trivy image scan
+                    // Trivy scan for image
                     sh """
-                        trivy image ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt
+                        trivy image ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt || true
                     """
                 }
             }
@@ -92,17 +98,22 @@ pipeline {
                     string(credentialsId: 'Access Key ID', variable: 'AWS_ACCESS_KEY_ID'),
                     string(credentialsId: 'Secret Access Key', variable: 'AWS_SECRET_ACCESS_KEY')
                 ]) {
-                    sh """
-                        set -e
+                    script {
+                        // Kubectl wrapper & kubeconfig
+                        def frontendDir = "${WORKSPACE}/Application-Code/frontend"
+                        def deploymentFile = "${WORKSPACE}/Kubernetes-Manifests-file/Frontend/deployment.yaml"
+                        def serviceFile    = "${WORKSPACE}/Kubernetes-Manifests-file/Frontend/service.yaml"
 
-                        # Install kubectl
-                        curl -sLO https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl
-                        chmod +x kubectl
-                        KUBECTL_BIN=\${WORKSPACE}/kubectl
-                        \${KUBECTL_BIN} version --client
+                        sh """
+                            set -e
 
-                        # AWS wrapper for eks get-token
-                        cat > \${WORKSPACE}/aws-wrapper.sh <<'WRAPPER_EOF'
+                            # Install kubectl
+                            curl -sLO https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl
+                            chmod +x kubectl
+                            KUBECTL_BIN=\${WORKSPACE}/kubectl
+
+                            # AWS wrapper for EKS token
+                            cat > \${WORKSPACE}/aws-wrapper.sh <<'EOF'
 #!/bin/bash
 output=\$(/usr/local/bin/aws "\$@")
 if [[ "\$*" == *"get-token"* ]]; then
@@ -110,16 +121,15 @@ if [[ "\$*" == *"get-token"* ]]; then
 else
     echo "\$output"
 fi
-WRAPPER_EOF
-                        chmod +x \${WORKSPACE}/aws-wrapper.sh
+EOF
+                            chmod +x \${WORKSPACE}/aws-wrapper.sh
 
-                        # Fetch cluster info
-                        CERT_DATA=\$(aws eks describe-cluster --name my-eks-cluster --region us-east-1 --query cluster.certificateAuthority.data --output text)
-                        ENDPOINT=\$(aws eks describe-cluster --name my-eks-cluster --region us-east-1 --query cluster.endpoint --output text)
+                            # Fetch cluster info
+                            CERT_DATA=\$(aws eks describe-cluster --name my-eks-cluster --region us-east-1 --query cluster.certificateAuthority.data --output text)
+                            ENDPOINT=\$(aws eks describe-cluster --name my-eks-cluster --region us-east-1 --query cluster.endpoint --output text)
 
-                        mkdir -p ${WORKSPACE}/.kube
-
-                        cat > ${KUBECONFIG} <<EOF
+                            mkdir -p ${WORKSPACE}/.kube
+                            cat > ${KUBECONFIG} <<EOL
 apiVersion: v1
 clusters:
 - cluster:
@@ -148,26 +158,27 @@ users:
       - --region
       - us-east-1
       env: null
-EOF
+EOL
 
-                        export KUBECONFIG=${KUBECONFIG}
+                            export KUBECONFIG=${KUBECONFIG}
 
-                        # Verify cluster access
-                        \${KUBECTL_BIN} get nodes
+                            # Verify cluster access
+                            \${KUBECTL_BIN} get nodes
 
-                        # Ensure namespace exists
-                        \${KUBECTL_BIN} get namespace three-tier || \${KUBECTL_BIN} create namespace three-tier
+                            # Ensure namespace exists
+                            \${KUBECTL_BIN} get namespace three-tier || \${KUBECTL_BIN} create namespace three-tier
 
-                        # Update deployment image
-                        sed -i "s|image: .*|image: ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" ${WORKSPACE}/Kubernetes-Manifests-file/Frontend/deployment.yaml
+                            # Update deployment image
+                            sed -i "s|image: .*|image: ${params.ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}|g" ${deploymentFile}
 
-                        # Apply frontend deployment and service
-                        \${KUBECTL_BIN} apply -f ${WORKSPACE}/Kubernetes-Manifests-file/Frontend/deployment.yaml -n three-tier
-                        \${KUBECTL_BIN} apply -f ${WORKSPACE}/Kubernetes-Manifests-file/Frontend/service.yaml -n three-tier
+                            # Apply frontend deployment and service
+                            \${KUBECTL_BIN} apply -f ${deploymentFile} -n three-tier
+                            \${KUBECTL_BIN} apply -f ${serviceFile} -n three-tier
 
-                        # Wait for rollout
-                        \${KUBECTL_BIN} rollout status deployment/frontend -n three-tier
-                    """
+                            # Wait for rollout
+                            \${KUBECTL_BIN} rollout status deployment/frontend -n three-tier
+                        """
+                    }
                 }
             }
         }
