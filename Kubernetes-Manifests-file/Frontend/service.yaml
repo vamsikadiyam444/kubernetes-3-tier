@@ -10,5 +10,5 @@ spec:
   selector:
     role: frontend
   ports:
-    - port: 80        # ALB will use this port
-      targetPort: 3000  # container port of frontend
+    - port: 80
+      targetPort: 80  # ← Change this from 3000 to 80
