@@ -6,7 +6,7 @@ metadata:
   labels:
     role: frontend
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector:
     role: frontend
   ports:
