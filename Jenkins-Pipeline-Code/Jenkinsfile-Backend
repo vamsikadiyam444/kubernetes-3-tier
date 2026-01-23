@@ -52,10 +52,6 @@ pipeline {
 
                     echo "=== Check for aws-iam-authenticator ==="
                     which aws-iam-authenticator || echo "aws-iam-authenticator not found"
-
-                    if command -v aws-iam-authenticator &> /dev/null; then
-                        aws-iam-authenticator version
-                    fi
                 '''
             }
         }
@@ -119,6 +115,9 @@ pipeline {
             }
         }
 
+        /* =======================
+           UPDATED DEPLOY STAGE
+           ======================= */
         stage('Deploy to EKS') {
             steps {
                 withCredentials([
@@ -127,16 +126,15 @@ pipeline {
                 ]) {
                     sh """
                         set -e
-
+                        
                         echo "=== Installing kubectl v1.30 ==="
-                        curl -LO https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl
+                        curl -LO "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl"
                         chmod +x kubectl
-
                         KUBECTL_BIN=\${WORKSPACE}/kubectl
-
+                        
                         echo "=== kubectl Version ==="
                         \${KUBECTL_BIN} version --client
-
+                        
                         echo "=== Setting up kubeconfig ==="
                         mkdir -p ${WORKSPACE}/.kube
 
@@ -145,9 +143,12 @@ pipeline {
                             --name my-eks-cluster \
                             --kubeconfig ${KUBECONFIG}
 
-                        export KUBECONFIG=${KUBECONFIG}
+                        # FIX: Replace v1alpha1 with v1beta1
+                        sed -i 's/v1alpha1/v1beta1/g' ${KUBECONFIG}
 
-                        echo "=== kubeconfig ==="
+                        export KUBECONFIG=${KUBECONFIG}
+                        
+                        echo "=== Fixed kubeconfig ==="
                         cat ${KUBECONFIG}
 
                         echo "=== Verifying cluster access ==="
