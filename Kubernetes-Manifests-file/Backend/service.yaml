@@ -3,10 +3,12 @@ kind: Service
 metadata:
   name: api
   namespace: three-tier
-spec: 
-  ports:
-  - port: 3500
-    protocol: TCP
-  type: ClusterIP
+spec:
+  type: NodePort
   selector:
     role: api
+  ports:
+    - protocol: TCP
+      port: 3500
+      targetPort: 3500
+      nodePort: 30050  # pick a port between 30000-32767
