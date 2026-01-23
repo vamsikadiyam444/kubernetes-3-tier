@@ -1,8 +1,7 @@
-FROM node:18-alpine AS build
+FROM node:16-alpine AS build
 
 WORKDIR /app
 
-# Accept build argument
 ARG REACT_APP_BACKEND_URL
 ENV REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL
 
@@ -11,7 +10,6 @@ RUN npm install
 
 COPY . .
 
-# Build with the environment variable baked in
 RUN npm run build
 
 FROM nginx:alpine
