@@ -1,3 +1,5 @@
+# 3-tier-application
+
 This project demonstrates a 3-tier web application deployed on AWS EKS, consisting of:
 
 Frontend: React application served via NGINX
@@ -197,7 +199,7 @@ sudo mv eksctl /usr/local/bin
 
 ```bash
 
-eksctl create cluster --name devops-cluster --region us-east-1 --nodes 2
+eksctl create cluster --name my-eks-cluster --region us-east-1 --nodes 2
 
 ```
 # To check the cluster 
@@ -207,4 +209,102 @@ eksctl create cluster --name devops-cluster --region us-east-1 --nodes 2
 kubectl get nodes
 
 ```
+
+
+# Create IAM policy for the Load Balancer Controller:
+
+```bash
+
+aws iam create-policy \
+  --policy-name AWSLoadBalancerControllerIAMPolicy \
+  --policy-document file://iam_policy.json
+
+```
+
+# Create IAM service account in Kubernetes:
+
+```bash
+
+eksctl create iamserviceaccount \
+  --cluster devops-portfolio-eks \
+  --namespace kube-system \
+  --name aws-load-balancer-controller \
+  --attach-policy-arn arn:aws:iam::596660701410:policy/AWSLoadBalancerControllerIAMPolicy \
+  --approve \
+  --override-existing-serviceaccounts \
+  --region us-east-1
+
+```
+
+# Install the AWS Load Balancer Controller via Helm:
+
+```bash
+
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+
+```
+
+```bash
+
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  --namespace kube-system \
+  --set clusterName=my-eks-cluster-eks \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller
+
+```
+
+Verify the ALB controller pods are running:
+
+```bash
+
+kubectl get pods -n kube-system | grep aws-load-balancer-controller
+
+```
+
+# ECR Repository Setup
+
+Create an ECR repository:
+
+```bash
+
+aws ecr create-repository --repository-name my-app-repo
+
+```
+
+# Verify ALB Controller
+
+```bash
+
+kubectl get pods -n kube-system | grep aws-load-balancer-controller
+kubectl describe sa aws-load-balancer-controller -n kube-system
+kubectl logs -n kube-system <alb-pod-name>
+
+```
+
+# Kubernetes Deployment &
+
+```bash
+
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+kubectl get pods
+kubectl get svc
+kubectl get endpoints
+
+```
+
+
+
+# Troubleshooting
+
+```bash
+
+kubectl get events -n kube-system
+kubectl describe pod <pod-name> -n kube-system
+kubectl logs <pod-name> -n kube-system
+
+```
+
 
