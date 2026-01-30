@@ -307,4 +307,21 @@ kubectl logs <pod-name> -n kube-system
 
 ```
 
+```
+
+User Browser
+     │
+     ▼
+   ALB (Application Load Balancer)
+     │
+     ▼
+   Nginx (serves React, proxies /api)
+     │
+     ▼
+Node.js backend (EKS pods)
+     │
+     ▼
+MongoDB (database)
+
+```
 
